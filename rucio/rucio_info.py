@@ -1,7 +1,8 @@
 """
 Rucio Data Information Collector
 
-This script collects information about replication rules and related data for given datasets from the Rucio system.
+This script collects information about replication rules and related
+data for given datasets from the Rucio system.
 It generates a JSON file containing the collected information.
 
 """
@@ -11,6 +12,7 @@ from rucio.client.ruleclient import RuleClient
 from rucio.client.client import Client
 from rucio.client.didclient import DIDClient
 from rucio.common.exception import DataIdentifierNotFound
+from rucio.client.scopeclient import ScopeClient
 import json
 import datetime
 import argparse
@@ -18,10 +20,10 @@ import argparse
 did_client = DIDClient()
 rule_client = RuleClient()
 client = Client(account="dunepro")
+scope_client = ScopeClient()
 
-
-def get_info(scope, name):
-    """ 
+def get_info(scope, datasets):
+    """
     Get replication rule information for specified datasets.
     Args:
         scope (str): The Rucio scope.
@@ -30,41 +32,54 @@ def get_info(scope, name):
         list: List of dictionaries containing replication rule information for each dataset.
     """
     info = []
-    for mdata in rule_client.list_replication_rules({'scope': scope}):
-        if not scope  in mdata['scope'] or not mdata['name'] in name:
-            continue
-        if mdata['state'] != 'OK':
-            continue
-        # this query is slow ...
-        total_size = sum(file_info['bytes'] for file_info in did_client.list_files(scope, mdata['name'])) 
-        _info = { 
-            "dataset": name,
-            "catalog": "rucio",
-            "did": mdata["id"],
-            "did_type": mdata["did_type"],
-            "site": mdata["rse_expression"],
-            "created_at": mdata["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": mdata["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
-            "size": total_size/1.0e9 # convert to GB
-            }   
-        info.append(_info)
+    if scope is not None:
+        scopes = [scope]
+    else:
+        scopes = scope_client.list_scopes()
+
+    for scope in scopes:
+        for mdata in rule_client.list_replication_rules({'scope': scope}):
+            if not mdata['name'] in datasets:
+                # If rucio admin don't save the name of the dataset in the metadata 
+                # this is useless 
+                continue
+            if mdata['state'] != 'OK':
+                continue
+            files = did_client.list_files(scope, mdata['name'])
+            total_size = 0
+            n_files = 0
+            for file_info in files:
+                total_size += file_info['bytes']
+                n_files += 1
+            _info = {
+                "dataset": mdata['name'],
+                "catalog": "rucio",
+                "did": mdata["id"],
+                "did_type": mdata["did_type"],
+                "site": mdata["rse_expression"],
+                "created_at": mdata["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_at": mdata["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                "size": total_size/1.0e9, # convert to GB
+                "n_files": n_files
+            } 
+            info.append(_info)
     return info
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--scope', type=str, help='rucio scope')
+    parser.add_argument('--scope', type=str, default=None, help='If scope is not specify, it would look at every scope in rucio')
     parser.add_argument('--datasets_file', type=str, help='file with datasets list')
+    parser.add_argument('--out_put_file', type=str, help='name of the json file containing the information')
     args = parser.parse_args()
     scope = args.scope
     datasets = []
     with open(args.datasets_file) as file:
         while line := file.readline():
-            d = line.replace('\n', '') 
+            d = line.replace('\n', '')
             datasets.append(d)
     
     info = get_info(scope, datasets)
     json = json.dumps(info)
-    f = open('rucio_info.json', 'w')
+    f = open(args.out_put_file, 'w')
     f.write(json)
     f.close()
-
